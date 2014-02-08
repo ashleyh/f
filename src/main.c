@@ -137,7 +137,7 @@ void read_opts(f_t* f, int argc, char** argv) {
     }
     f->filter_arg.pattern = argv[0];
   } else {
-    f = NULL;
+    f->filter = NULL;
   }
 }
 
