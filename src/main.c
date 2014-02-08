@@ -4,8 +4,8 @@
 #include <uv.h>
 #include <stdlib.h>
 #include <assert.h>
-#include <bsd/string.h>
 #include <stdbool.h>
+#include "shame.h"
 
 typedef struct f_s f_t;
 typedef bool (*filter_t)(f_t*, const char*, uv_stat_t*);
