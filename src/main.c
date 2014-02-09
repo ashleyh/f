@@ -19,6 +19,15 @@ struct f_s {
   char* root;
   char* buf;
   size_t buf_size;
+  struct {
+    unsigned int tasks_pending;
+    unsigned int ticks;
+    unsigned int lstats;
+    unsigned int readdirs;
+    unsigned int errors;
+  } stats;
+  uv_timer_t timer;
+  bool is_interactive;
 };
 
 void readdir_cb(uv_fs_t*);
@@ -59,19 +68,35 @@ bool should_walk(f_t* f, const char* path, uv_stat_t* buf) {
   return true;
 }
 
+static inline void clear_status() {
+  fprintf(stderr, "\r"); // XXX not good
+}
+
+static inline void stop_timer_if_done(f_t* f) {
+  if (f->stats.tasks_pending == 0) {
+    uv_timer_stop(&f->timer);
+  }
+}
+
 void lstat_cb(uv_fs_t* req) {
   bool reused_req = false;
+  f_t* f = (f_t*)req->loop->data;
   const char* path = req->path;
+
+  f->stats.tasks_pending--;
+  f->stats.lstats++;
+
   if (req->result < 0) {
-    fprintf(stderr, "error: %s: %s\n", path, uv_strerror(req->result));
+    f->stats.errors++;
   } else {
     uv_stat_t* buf = (uv_stat_t*)req->ptr;
-    f_t* f = (f_t*)req->loop->data;
     if (should_walk(f, path, buf)) {
       reused_req = true;
+      f->stats.tasks_pending++;
       uv_fs_readdir(req->loop, req, req->path, O_RDONLY, readdir_cb);
     }
     if (f->filter == NULL || f->filter(f, path, buf)) {
+      clear_status();
       puts(path);
     }
   }
@@ -79,6 +104,8 @@ void lstat_cb(uv_fs_t* req) {
   if (!reused_req) {
     free(req);
   }
+
+  stop_timer_if_done(f);
 }
 
 // true iff resized
@@ -99,8 +126,11 @@ void readdir_cb(uv_fs_t* req) {
   ssize_t file_count = req->result;
   void* req_ptr = req->ptr;
 
+  f->stats.tasks_pending--;
+  f->stats.readdirs++;
+
   if (file_count < 0) {
-    fprintf(stderr, "error: %s: %s\n", root, uv_strerror(file_count));
+    f->stats.errors++;
   } else {
     size_t root_len = strlen(root);
     if (root[root_len - 1] != '/') {
@@ -128,6 +158,7 @@ void readdir_cb(uv_fs_t* req) {
         next_req = req;
         reused_req = true;
       }
+      f->stats.tasks_pending++;
       uv_fs_lstat(req->loop, next_req, f->buf, lstat_cb);
       child += child_len + 1;
     }
@@ -138,6 +169,8 @@ void readdir_cb(uv_fs_t* req) {
   if (!reused_req) {
     free(req);
   }
+
+  stop_timer_if_done(f);
 }
 
 void read_opts(f_t* f, int argc, char** argv) {
@@ -174,21 +207,57 @@ void read_opts(f_t* f, int argc, char** argv) {
   }
 }
 
+void timer_cb(uv_timer_t* req, int status) {
+  (void)status;
+  f_t* f = (f_t*)req->loop->data;
+  f->stats.ticks++;
+  char* ticker="/-\\|";
+  clear_status();
+  fprintf(stderr,
+      "%c lstats=%d readdirs=%d pending=%d errors=%d",
+      ticker[f->stats.ticks%4],
+      f->stats.lstats,
+      f->stats.readdirs,
+      f->stats.tasks_pending,
+      f->stats.errors);
+  fflush(stdout);
+}
+
 int run(f_t* f) {
-  f->buf_size = 1;
-  f->buf = malloc(f->buf_size);
   uv_loop_t* loop = uv_default_loop();
   loop->data = f;
+
+  f->buf_size = 1;
+  f->buf = malloc(f->buf_size);
+
+  f->is_interactive = (uv_guess_handle(STDERR_FILENO) == UV_TTY);
+  if (f->is_interactive) {
+    uv_timer_init(loop, &f->timer);
+    uv_timer_start(&f->timer, &timer_cb, 500, 500);
+  }
+
   uv_fs_t* req = malloc(sizeof(uv_fs_t));
+  f->stats.tasks_pending++;
   uv_fs_readdir(loop, req, f->root, O_RDONLY, readdir_cb);
+
   int r = uv_run(loop, UV_RUN_DEFAULT);
+
+  clear_status();
+  if (f->stats.errors == 1) {
+    fprintf(stderr, "there was 1 error\n");
+  } else if (f->stats.errors > 1) {
+    fprintf(stderr, "there were %d errors\n", f->stats.errors);
+  }
+
   free(f->root);
   free(f->buf);
+
   return r;
 }
 
 int main(int argc, char** argv) {
   f_t f;
+  memset(&f, 0, sizeof(f_t));
   read_opts(&f, argc, argv);
   return run(&f);
 }
