@@ -9,7 +9,6 @@ LIBUV_IN=$(CURDIR)/deps/libuv
 LIBUV_OUT=$(CURDIR)/build/deps/libuv
 CC?=clang
 CFLAGS?=-std=gnu11 -Wall -Wpedantic -Wextra -Werror -g
-LDFLAGS?=-L$(LIBUV_OUT)/lib -luv
 
 PLATFORM=$(shell uname -s)
 
@@ -43,5 +42,6 @@ build/f: build/main.o
 	$(CC) \
 	  $(CFLAGS) \
 	  $(LDFLAGS) \
-	  -Wl,-rpath -Wl,$(LIBUV_OUT)/lib \
-	  -o $@ $<
+	  -o $@ \
+	  $< \
+	  $(LIBUV_OUT)/lib/libuv.a
