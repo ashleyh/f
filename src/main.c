@@ -17,6 +17,8 @@ struct f_s {
     const char* pattern;
   } filter_arg;
   char* root;
+  char* buf;
+  size_t buf_size;
 };
 
 void readdir_cb(uv_fs_t*);
@@ -79,34 +81,63 @@ void lstat_cb(uv_fs_t* req) {
   }
 }
 
+// true iff resized
+static inline bool resize_buf(f_t* f, size_t required_size) {
+  if (required_size > f->buf_size) {
+    while (required_size > f->buf_size) f->buf_size *= 2;
+    f->buf = realloc(f->buf, f->buf_size);
+    return true;
+  } else {
+    return false;
+  }
+}
+
 void readdir_cb(uv_fs_t* req) {
+  bool reused_req = false;
+  f_t* f = (f_t*)req->loop->data;
   const char* root = req->path;
   ssize_t file_count = req->result;
+  void* req_ptr = req->ptr;
 
   if (file_count < 0) {
     fprintf(stderr, "error: %s: %s\n", root, uv_strerror(file_count));
   } else {
     size_t root_len = strlen(root);
-    assert(root[root_len - 1] != '/');
-    char* child = req->ptr;
+    if (root[root_len - 1] != '/') {
+      root_len++;
+    }
+    resize_buf(f, root_len + 1);
+    stpcpy(f->buf, root);
+    char* buf_end = f->buf + root_len;
+    buf_end[-1] = '/';
+    buf_end[0] = 0;
+
+    char* child = req_ptr;
     while (file_count-- > 0) {
       size_t child_len = strlen(child);
-      size_t next_root_size = root_len + child_len + 2;
-      char* next_root = malloc(next_root_size);
-      strlcpy(next_root, root, next_root_size);
-      strlcat(next_root, "/", next_root_size);
-      strlcat(next_root, child, next_root_size);
-      uv_fs_t* next_req = malloc(sizeof(uv_fs_t));
-      uv_fs_lstat(req->loop, next_req, next_root, lstat_cb);
-      // uv strdups the path >->
-      free(next_root);
+      size_t required_size = root_len + child_len + 1;
+      if (resize_buf(f, required_size)) {
+        buf_end = f->buf + root_len;
+        assert(buf_end[-1] == '/');
+      }
+      strlcpy(buf_end, child, child_len + 1);
+      uv_fs_t* next_req = NULL;
+      if (reused_req) {
+        next_req = malloc(sizeof(uv_fs_t));
+      } else {
+        next_req = req;
+        reused_req = true;
+      }
+      uv_fs_lstat(req->loop, next_req, f->buf, lstat_cb);
       child += child_len + 1;
     }
   }
 
-  free(req->ptr);
-  free((void*)req->path);
-  free(req);
+  free((void*)root);
+  free(req_ptr);
+  if (!reused_req) {
+    free(req);
+  }
 }
 
 void read_opts(f_t* f, int argc, char** argv) {
@@ -144,12 +175,15 @@ void read_opts(f_t* f, int argc, char** argv) {
 }
 
 int run(f_t* f) {
+  f->buf_size = 1;
+  f->buf = malloc(f->buf_size);
   uv_loop_t* loop = uv_default_loop();
   loop->data = f;
   uv_fs_t* req = malloc(sizeof(uv_fs_t));
   uv_fs_readdir(loop, req, f->root, O_RDONLY, readdir_cb);
   int r = uv_run(loop, UV_RUN_DEFAULT);
   free(f->root);
+  free(f->buf);
   return r;
 }
 
