@@ -58,6 +58,7 @@ bool should_walk(f_t* f, const char* path, uv_stat_t* buf) {
 }
 
 void lstat_cb(uv_fs_t* req) {
+  bool reused_req = false;
   const char* path = req->path;
   if (req->result < 0) {
     fprintf(stderr, "error: %s: %s\n", path, uv_strerror(req->result));
@@ -65,16 +66,17 @@ void lstat_cb(uv_fs_t* req) {
     uv_stat_t* buf = (uv_stat_t*)req->ptr;
     f_t* f = (f_t*)req->loop->data;
     if (should_walk(f, path, buf)) {
-      // reusing req
+      reused_req = true;
       uv_fs_readdir(req->loop, req, req->path, O_RDONLY, readdir_cb);
-    } else {
-      free(req);
     }
     if (f->filter == NULL || f->filter(f, path, buf)) {
       puts(path);
     }
   }
   free((void*)path);
+  if (!reused_req) {
+    free(req);
+  }
 }
 
 void readdir_cb(uv_fs_t* req) {
