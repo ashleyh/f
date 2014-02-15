@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <stdbool.h>
 #include "shame.h"
+#include "sl.h"
 
 typedef struct f_s f_t;
 typedef bool (*filter_t)(f_t*, const char*, uv_stat_t*);
@@ -17,8 +18,7 @@ struct f_s {
     const char* pattern;
   } filter_arg;
   char* root;
-  char* buf;
-  size_t buf_size;
+  sl_t buf;
   struct {
     unsigned int tasks_pending;
     unsigned int ticks;
@@ -31,6 +31,13 @@ struct f_s {
 };
 
 void readdir_cb(uv_fs_t*);
+
+static inline void check_oom(bool val) {
+  if (!val) {
+    fputs("out of memory", stderr);
+    exit(1);
+  }
+}
 
 const char* basename(const char* path) {
   const char* basename = strrchr(path, '/');
@@ -108,14 +115,15 @@ void lstat_cb(uv_fs_t* req) {
   stop_timer_if_done(f);
 }
 
-// true iff resized
-static inline bool resize_buf(f_t* f, size_t required_size) {
-  if (required_size > f->buf_size) {
-    while (required_size > f->buf_size) f->buf_size *= 2;
-    f->buf = realloc(f->buf, f->buf_size);
-    return true;
+void set_to_path(sl_t sl, const char* path) {
+  size_t path_len = strlen(path);
+  check_oom(sl_ensure_capacity_f(sl, path_len + 1));
+  sl_overwrite(sl, 0, path, path_len);
+  if (sl_peek(sl, path_len - 1) != '/') {
+    sl_set_length(sl, path_len + 1);
+    sl_poke(sl, path_len, '/');
   } else {
-    return false;
+    sl_set_length(sl, path_len);
   }
 }
 
@@ -132,25 +140,14 @@ void readdir_cb(uv_fs_t* req) {
   if (file_count < 0) {
     f->stats.errors++;
   } else {
-    size_t root_len = strlen(root);
-    if (root[root_len - 1] != '/') {
-      root_len++;
-    }
-    resize_buf(f, root_len + 1);
-    stpcpy(f->buf, root);
-    char* buf_end = f->buf + root_len;
-    buf_end[-1] = '/';
-    buf_end[0] = 0;
-
+    set_to_path(f->buf, root);
+    size_t root_len = sl_get_length(f->buf);
     char* child = req_ptr;
     while (file_count-- > 0) {
       size_t child_len = strlen(child);
-      size_t required_size = root_len + child_len + 1;
-      if (resize_buf(f, required_size)) {
-        buf_end = f->buf + root_len;
-        assert(buf_end[-1] == '/');
-      }
-      strlcpy(buf_end, child, child_len + 1);
+      sl_set_length(f->buf, root_len);
+      check_oom(sl_append_f(f->buf, child, child_len));
+      check_oom(sl_null_terminate_f(f->buf));
       uv_fs_t* next_req = NULL;
       if (reused_req) {
         next_req = malloc(sizeof(uv_fs_t));
@@ -159,7 +156,7 @@ void readdir_cb(uv_fs_t* req) {
         reused_req = true;
       }
       f->stats.tasks_pending++;
-      uv_fs_lstat(req->loop, next_req, f->buf, lstat_cb);
+      uv_fs_lstat(req->loop, next_req, sl_get_buf(f->buf), lstat_cb);
       child += child_len + 1;
     }
   }
@@ -227,8 +224,8 @@ int run(f_t* f) {
   uv_loop_t* loop = uv_default_loop();
   loop->data = f;
 
-  f->buf_size = 1;
-  f->buf = malloc(f->buf_size);
+  f->buf = sl_alloc_f(1);
+  check_oom(f->buf);
 
   f->is_interactive = (uv_guess_handle(STDERR_FILENO) == UV_TTY);
   if (f->is_interactive) {
@@ -250,7 +247,7 @@ int run(f_t* f) {
   }
 
   free(f->root);
-  free(f->buf);
+  sl_free(f->buf);
 
   return r;
 }

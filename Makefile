@@ -30,7 +30,7 @@ $(LIBUV_IN)/Makefile: $(LIBUV_IN)/configure
 $(LIBUV_OUT): $(LIBUV_IN)/Makefile
 	make -C $(LIBUV_IN) install
 
-build/%.o: src/%.c $(LIBUV_OUT) build/gen/shame.h
+build/%.o: src/%.c src/*.h $(LIBUV_OUT) build/gen/shame.h
 	$(CC) \
 	  $(CFLAGS) \
 	  -I$(LIBUV_OUT)/include \
