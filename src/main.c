@@ -7,9 +7,10 @@
 #include <stdbool.h>
 #include "shame.h"
 #include "sl.h"
+#include <dirent.h>
 
 typedef struct f_s f_t;
-typedef bool (*filter_t)(f_t*, const char*, uv_stat_t*);
+typedef bool (*filter_t)(f_t*, const char*);
 
 struct f_s {
   bool prune_hidden_dirs;
@@ -30,6 +31,13 @@ struct f_s {
   bool is_interactive;
 };
 
+struct f_scandir_response_s {
+  char* path;
+  sl_t dents;
+};
+
+typedef struct f_scandir_response_s* f_scandir_response_t;
+
 void readdir_cb(uv_fs_t*);
 
 static inline void check_oom(bool val) {
@@ -49,13 +57,11 @@ const char* basename(const char* path) {
   return basename;
 }
 
-bool filter_strstr_path(f_t* f, const char* path, uv_stat_t* buf) {
-  (void)buf;
+bool filter_strstr_path(f_t* f, const char* path) {
   return strstr(path, f->filter_arg.pattern);
 }
 
-bool filter_strstr_basename(f_t* f, const char* path, uv_stat_t* buf) {
-  (void)buf;
+bool filter_strstr_basename(f_t* f, const char* path) {
   return strstr(basename(path), f->filter_arg.pattern);
 }
 
@@ -63,15 +69,10 @@ bool is_hidden(const char* path) {
   return basename(path)[0] == '.';
 }
 
-bool should_walk(f_t* f, const char* path, uv_stat_t* buf) {
-  if (!S_ISDIR(buf->st_mode)) {
-    return false;
-  }
-
+bool should_walk(f_t* f, const char* path) {
   if (f->prune_hidden_dirs && is_hidden(path)) {
     return false;
   }
-
   return true;
 }
 
@@ -85,37 +86,60 @@ static inline void stop_timer_if_done(f_t* f) {
   }
 }
 
-void lstat_cb(uv_fs_t* req) {
-  bool reused_req = false;
-  f_t* f = (f_t*)req->loop->data;
-  const char* path = req->path;
-
-  f->stats.tasks_pending--;
-  f->stats.lstats++;
-
-  if (req->result < 0) {
-    f->stats.errors++;
-  } else {
-    uv_stat_t* buf = (uv_stat_t*)req->ptr;
-    if (should_walk(f, path, buf)) {
-      reused_req = true;
-      f->stats.tasks_pending++;
-      uv_fs_readdir(req->loop, req, req->path, O_RDONLY, readdir_cb);
-    }
-    if (f->filter == NULL || f->filter(f, path, buf)) {
-      clear_status();
-      puts(path);
-    }
-  }
-  free((void*)path);
-  if (!reused_req) {
-    free(req);
-  }
-
-  stop_timer_if_done(f);
+static inline bool is_dots(const char* name) {
+  if (name[0] != '.') return false;
+  if (name[1] == 0) return true;
+  if (name[1] != '.') return false;
+  if (name[2] == 0) return true;
+  return false;
 }
 
-void set_to_path(sl_t sl, const char* path) {
+static inline bool readdir_wrapper(DIR* dir, struct dirent** dent, int* err) {
+  errno = 0;
+  *dent = readdir(dir);
+  if (*dent == NULL) {
+    *err = errno;
+    return false;
+  } else {
+    *err = 0;
+    return true;
+  }
+}
+
+static inline bool f_scandir_impl(const char* path, f_scandir_response_t response) {
+  DIR* dir = opendir(path);
+  if (dir == NULL) {
+    return false;
+  }
+  struct dirent* dent = NULL;
+  int err = 0;
+  while (readdir_wrapper(dir, &dent, &err)) {
+    if (!is_dots(dent->d_name)) {
+      check_oom(sl_append_f(response->dents, (const char*)dent, dent->d_reclen));
+    }
+  }
+  bool ok = (err == 0);
+  closedir(dir);
+  return ok;
+}
+
+void f_scandir_work(uv_work_t* req) {
+  char* path = req->data;
+  f_scandir_response_t response = malloc(sizeof(struct f_scandir_response_s));
+  check_oom(response);
+  response->dents = sl_alloc_f(1);
+  check_oom(response->dents);
+  response->path = path;
+  if (!f_scandir_impl(path, response)) {
+    if (response->dents != NULL) {
+      sl_free(response->dents);
+    }
+    response->dents = NULL;
+  }
+  req->data = response;
+}
+
+static inline void set_to_path(sl_t sl, const char* path) {
   size_t path_len = strlen(path);
   check_oom(sl_ensure_capacity_f(sl, path_len + 1));
   sl_overwrite(sl, 0, path, path_len);
@@ -127,47 +151,56 @@ void set_to_path(sl_t sl, const char* path) {
   }
 }
 
-void readdir_cb(uv_fs_t* req) {
-  bool reused_req = false;
+void f_scandir(uv_loop_t* loop, char* root);
+
+static inline void visit(f_t* f) {
+  if (f->filter == NULL || f->filter(f, f->buf->buf)) {
+    clear_status();
+    puts(f->buf->buf);
+  }
+}
+
+void f_scandir_cb(uv_work_t* req, int status) {
   f_t* f = (f_t*)req->loop->data;
-  const char* root = req->path;
-  ssize_t file_count = req->result;
-  void* req_ptr = req->ptr;
-
+  f_scandir_response_t response = req->data;
   f->stats.tasks_pending--;
-  f->stats.readdirs++;
-
-  if (file_count < 0) {
+  if (response->dents == NULL) {
     f->stats.errors++;
   } else {
-    set_to_path(f->buf, root);
+    set_to_path(f->buf, response->path);
     size_t root_len = sl_get_length(f->buf);
-    char* child = req_ptr;
-    while (file_count-- > 0) {
-      size_t child_len = strlen(child);
+    size_t off = 0;
+    while (off < response->dents->length) {
+      struct dirent* dent = (struct dirent*)(response->dents->buf + off);
       sl_set_length(f->buf, root_len);
-      check_oom(sl_append_f(f->buf, child, child_len));
+      check_oom(sl_append_f(f->buf, dent->d_name, dent->d_namlen));
       check_oom(sl_null_terminate_f(f->buf));
-      uv_fs_t* next_req = NULL;
-      if (reused_req) {
-        next_req = malloc(sizeof(uv_fs_t));
-      } else {
-        next_req = req;
-        reused_req = true;
+      visit(f);
+      switch (dent->d_type) {
+        case DT_UNKNOWN:
+        case DT_DIR:
+        case DT_LNK:
+          if (should_walk(f, f->buf->buf)) {
+            f_scandir(req->loop, strdup(f->buf->buf));
+          }
       }
-      f->stats.tasks_pending++;
-      uv_fs_lstat(req->loop, next_req, sl_get_buf(f->buf), lstat_cb);
-      child += child_len + 1;
+      off += dent->d_reclen;
     }
+    sl_free(response->dents);
   }
-
-  free((void*)root);
-  free(req_ptr);
-  if (!reused_req) {
-    free(req);
-  }
-
+  (void)status;
   stop_timer_if_done(f);
+  free(req);
+  free(response->path);
+  free(response);
+}
+
+void f_scandir(uv_loop_t* loop, char* root) {
+  f_t* f = (f_t*)loop->data;
+  uv_work_t* req = (uv_work_t*)malloc(sizeof(uv_work_t));
+  req->data = root;
+  f->stats.tasks_pending++;
+  uv_queue_work(loop, req, f_scandir_work, f_scandir_cb);
 }
 
 void read_opts(f_t* f, int argc, char** argv) {
@@ -233,9 +266,7 @@ int run(f_t* f) {
     uv_timer_start(&f->timer, &timer_cb, 500, 500);
   }
 
-  uv_fs_t* req = malloc(sizeof(uv_fs_t));
-  f->stats.tasks_pending++;
-  uv_fs_readdir(loop, req, f->root, O_RDONLY, readdir_cb);
+  f_scandir(loop, f->root);
 
   int r = uv_run(loop, UV_RUN_DEFAULT);
 
@@ -246,7 +277,6 @@ int run(f_t* f) {
     fprintf(stderr, "there were %d errors\n", f->stats.errors);
   }
 
-  free(f->root);
   sl_free(f->buf);
 
   return r;
