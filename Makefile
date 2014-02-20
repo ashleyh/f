@@ -11,12 +11,7 @@ CC?=clang
 CFLAGS?=-std=gnu11 -Wall -Wpedantic -Wextra -Werror -g
 
 PLATFORM=$(shell uname -s)
-
-ifeq ($(PLATFORM),Linux)
-  include linux.mk
-else
-  include generic.mk
-endif
+include $(PLATFORM).mk
 
 $(LIBUV_IN)/autogen.sh:
 	git submodule update --init $(LIBUV_IN)
@@ -30,11 +25,11 @@ $(LIBUV_IN)/Makefile: $(LIBUV_IN)/configure
 $(LIBUV_OUT): $(LIBUV_IN)/Makefile
 	make -C $(LIBUV_IN) install
 
-build/%.o: src/%.c src/*.h $(LIBUV_OUT) build/gen/shame.h
+build/%.o: src/%.c src/*.h $(LIBUV_OUT) src/$(PLATFORM)/shame.h
 	$(CC) \
 	  $(CFLAGS) \
 	  -I$(LIBUV_OUT)/include \
-	  -Ibuild/gen \
+	  -Isrc/$(PLATFORM) \
 	  -c \
 	  -o $@ $<
 

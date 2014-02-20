@@ -173,7 +173,7 @@ void f_scandir_cb(uv_work_t* req, int status) {
     while (off < response->dents->length) {
       struct dirent* dent = (struct dirent*)(response->dents->buf + off);
       sl_set_length(f->buf, root_len);
-      check_oom(sl_append_f(f->buf, dent->d_name, dent->d_namlen));
+      check_oom(sl_append_f(f->buf, dent->d_name, get_namlen(dent)));
       check_oom(sl_null_terminate_f(f->buf));
       visit(f);
       switch (dent->d_type) {
