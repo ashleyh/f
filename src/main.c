@@ -14,6 +14,7 @@ typedef bool (*filter_t)(f_t*, const char*);
 
 struct f_s {
   bool prune_hidden_dirs;
+  bool case_sensitive;
   filter_t filter;
   union {
     const char* pattern;
@@ -57,12 +58,17 @@ const char* basename(const char* path) {
   return basename;
 }
 
+static inline bool strxstr(const char* haystack, const char* needle,
+    bool case_sensitive) {
+  return (case_sensitive? strstr: strcasestr)(haystack, needle);
+}
+
 bool filter_strstr_path(f_t* f, const char* path) {
-  return strstr(path, f->filter_arg.pattern);
+  return strxstr(path, f->filter_arg.pattern, f->case_sensitive);
 }
 
 bool filter_strstr_basename(f_t* f, const char* path) {
-  return strstr(basename(path), f->filter_arg.pattern);
+  return strxstr(basename(path), f->filter_arg.pattern, f->case_sensitive);
 }
 
 bool is_hidden(const char* path) {
@@ -207,11 +213,15 @@ void read_opts(f_t* f, int argc, char** argv) {
   int opt;
   f->root = strdup(".");
   f->filter = filter_strstr_basename;
+  f->case_sensitive = false;
   f->prune_hidden_dirs = true;
-  while ((opt = getopt(argc, argv, "apd:")) != -1) {
+  while ((opt = getopt(argc, argv, "acpd:")) != -1) {
     switch (opt) {
       case 'a':
         f->prune_hidden_dirs = false;
+        break;
+      case 'c':
+        f->case_sensitive = true;
         break;
       case 'd':
         free(f->root);
@@ -222,9 +232,10 @@ void read_opts(f_t* f, int argc, char** argv) {
         break;
       default:
         fprintf(stderr,
-            "Usage: %s [-a] [-d dir] [-p] [pattern]\n"
+            "Usage: %s [-a] [-c] [-d dir] [-p] [pattern]\n"
             "Options:\n"
             "  -a      don't prune hidden dirs\n"
+            "  -c      respect case\n"
             "  -d dir  root in dir not .\n"
             "  -p      match in whole path\n"
             , argv[0]
