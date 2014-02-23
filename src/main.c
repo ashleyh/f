@@ -208,7 +208,7 @@ void read_opts(f_t* f, int argc, char** argv) {
   f->root = strdup(".");
   f->filter = filter_strstr_basename;
   f->prune_hidden_dirs = true;
-  while ((opt = getopt(argc, argv, "ad:")) != -1) {
+  while ((opt = getopt(argc, argv, "apd:")) != -1) {
     switch (opt) {
       case 'a':
         f->prune_hidden_dirs = false;
@@ -221,7 +221,14 @@ void read_opts(f_t* f, int argc, char** argv) {
         f->filter = filter_strstr_path;
         break;
       default:
-        fprintf(stderr, "Usage: %s [-d dir] [pattern]\n", argv[0]);
+        fprintf(stderr,
+            "Usage: %s [-a] [-d dir] [-p] [pattern]\n"
+            "Options:\n"
+            "  -a      don't prune hidden dirs\n"
+            "  -d dir  root in dir not .\n"
+            "  -p      match in whole path\n"
+            , argv[0]
+            );
         exit(EXIT_FAILURE);
     }
   }
