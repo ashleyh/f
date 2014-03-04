@@ -28,7 +28,6 @@ struct f_s {
     unsigned int readdirs;
     unsigned int errors;
   } stats;
-  uv_timer_t timer;
   bool is_interactive;
 };
 
@@ -80,16 +79,6 @@ bool should_walk(f_t* f, const char* path) {
     return false;
   }
   return true;
-}
-
-static inline void clear_status() {
-  fprintf(stderr, "\r"); // XXX not good
-}
-
-static inline void stop_timer_if_done(f_t* f) {
-  if (f->stats.tasks_pending == 0) {
-    uv_timer_stop(&f->timer);
-  }
 }
 
 static inline bool is_dots(const char* name) {
@@ -161,7 +150,6 @@ void f_scandir(uv_loop_t* loop, char* root);
 
 static inline void visit(f_t* f) {
   if (f->filter == NULL || f->filter(f, f->buf->buf)) {
-    clear_status();
     puts(f->buf->buf);
   }
 }
@@ -195,7 +183,6 @@ void f_scandir_cb(uv_work_t* req, int status) {
     sl_free(response->dents);
   }
   (void)status;
-  stop_timer_if_done(f);
   free(req);
   free(response->path);
   free(response);
@@ -255,22 +242,6 @@ void read_opts(f_t* f, int argc, char** argv) {
   }
 }
 
-void timer_cb(uv_timer_t* req, int status) {
-  (void)status;
-  f_t* f = (f_t*)req->loop->data;
-  f->stats.ticks++;
-  char* ticker="/-\\|";
-  clear_status();
-  fprintf(stderr,
-      "%c lstats=%d readdirs=%d pending=%d errors=%d",
-      ticker[f->stats.ticks%4],
-      f->stats.lstats,
-      f->stats.readdirs,
-      f->stats.tasks_pending,
-      f->stats.errors);
-  fflush(stdout);
-}
-
 int run(f_t* f) {
   uv_loop_t* loop = uv_default_loop();
   loop->data = f;
@@ -278,17 +249,10 @@ int run(f_t* f) {
   f->buf = sl_alloc_f(1);
   check_oom(f->buf);
 
-  f->is_interactive = (uv_guess_handle(STDERR_FILENO) == UV_TTY);
-  if (f->is_interactive) {
-    uv_timer_init(loop, &f->timer);
-    uv_timer_start(&f->timer, &timer_cb, 500, 500);
-  }
-
   f_scandir(loop, f->root);
 
   int r = uv_run(loop, UV_RUN_DEFAULT);
 
-  clear_status();
   if (f->stats.errors == 1) {
     fprintf(stderr, "there was 1 error\n");
   } else if (f->stats.errors > 1) {
