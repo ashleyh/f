@@ -1,6 +1,10 @@
 #ifndef SL_H_WBLWNQJT
 #define SL_H_WBLWNQJT
 
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+
 struct sl_s {
   size_t length, capacity;
   char* buf;
